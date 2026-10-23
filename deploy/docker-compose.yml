@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    image: childrens-tutor:latest
+    container_name: childrens-tutor
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    # 模型配置可写在 .env，也可留空、部署后到 /admin 配置
+    env_file: .env
+    volumes:
+      # config：roles.json 与控制页的 settings.json；logs：审计日志；images：画画结果。重新部署不会丢失
+      - ./data:/data
