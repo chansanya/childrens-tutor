@@ -33,7 +33,12 @@ interface State {
   dropTail: (sid: string) => void
 }
 
-export const uid = () => crypto.randomUUID()
+// crypto.randomUUID 只在 HTTPS 或 localhost 下可用；通过局域网 http 地址访问时，改用 getRandomValues 生成 v4 UUID
+export const uid = () =>
+  crypto.randomUUID?.() ??
+  '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, c =>
+    (Number(c) ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (Number(c) / 4)))).toString(16),
+  )
 
 const INTERRUPTED = '这条回答被打断了，点“重新回答”再试一次吧。'
 

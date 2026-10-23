@@ -104,7 +104,16 @@ export default function Message({ msg, role, typing, canRegenerate, onRegenerate
 
   const pending = msg.status === 'thinking' || msg.status === 'reviewing' || msg.status === 'drawing'
   const copy = async () => {
-    await navigator.clipboard.writeText(msg.content)
+    // navigator.clipboard 只在 HTTPS 或 localhost 下可用；局域网 http 访问时退回 execCommand
+    if (navigator.clipboard) await navigator.clipboard.writeText(msg.content)
+    else {
+      const t = Object.assign(document.createElement('textarea'), { value: msg.content })
+      t.style.cssText = 'position:fixed;opacity:0'
+      document.body.appendChild(t)
+      t.select()
+      document.execCommand('copy')
+      t.remove()
+    }
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
