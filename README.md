@@ -9,11 +9,13 @@
 - 孩子只能在预设角色间选择，不能切换模型
 - 支持新建、删除会话，重新回答，停止生成；会话保存在浏览器本地
 - `/admin` 控制页：在线修改对话模型、审查模型、守护规则和角色，保存即生效
+- 第三方可通过兼容 OpenAI Responses 的接口一问一答，与网页共用同一套引导和审查
 - 一条命令打包，用 Docker 部署到 Linux 服务器
 
 文档：
-- [docs/对话流程.md](docs/对话流程.md)：一次对话从发起、意图审查、画画到输出审查的完整过程，附代码行号
+- [docs/对话流程.md](docs/对话流程.md)：一次对话从发起、意图审查、画画到输出审查的完整过程，标注了每一步对应的代码文件
 - [docs/目录说明.md](docs/目录说明.md)：每个目录和文件的作用
+- [docs/第三方接入.md](docs/第三方接入.md)：给第三方开发者的接入指南，含 curl、Node.js、Python 示例；完整的 Node.js 示例与测试见 [examples/node-client.mjs](examples/node-client.mjs)
 
 ## 快速开始
 
@@ -113,6 +115,7 @@ GUARD_STRICT=true
 | 角色管理 | 新增、编辑、删除角色：名称、简介、图标、主题色、问候语、人设提示词、专属模型 |
 | 绘画 | 启用开关、ComfyUI 地址与测试连接、超时和排队上限；管理绘画模板并切换正在使用的模板 |
 | 审计 | 近 1 / 7 / 30 天各阶段耗时的 P50、P95、均值，处理路径占比，最近 100 条记录 |
+| API 接入 | 创建和吊销第三方 API Key，并提供 curl 与 OpenAI SDK 调用示例 |
 
 菜单项上的琥珀色圆点表示"尚未配置"，主题色圆点表示"有未保存的修改"。保存按钮统一在底部，保存后立即生效，无需重启。守护规则、角色管理和绘画模板都有"恢复默认"。
 
@@ -142,7 +145,7 @@ GUARD_STRICT=true
 
 ## 审计
 
-每次对话结束时输出一行 JSON：一份打印到服务日志（前缀 `[audit] `），一份追加到 `data/logs/audit-YYYY-MM.jsonl`。重新部署时容器会重建，`docker logs` 会丢失，所以分析请以 jsonl 文件为准。记录**不包含对话原文**：
+每次对话结束时，在 `data/logs/audit-YYYY-MM.jsonl` 中追加一行 JSON，同时在服务日志中打一行中文结果摘要（见下文"日志"）。重新部署时容器会重建，`docker logs` 会丢失，所以分析请以 jsonl 文件为准。记录**不包含对话原文**：
 
 ```json
 {"ts":"2026-10-23T10:00:00.000Z","id":"…","role":"explorer","mainModel":"kimi-k3","guardModel":"deepseek-v4.1-flash","inChars":12,"guide":false,
@@ -162,6 +165,21 @@ jq -s 'map(.ms.total) | sort | .[length * 95 / 100 | floor]' data/logs/audit-*.j
 # 各路径次数
 jq -s 'group_by(.path) | map({path: .[0].path, n: length})' data/logs/audit-*.jsonl
 ```
+
+## 日志
+
+服务日志是单行中文文本，只打印关键信息，代码值都附带中文含义，例如 `path=refusal（绕过拒绝）`、`intent=bypass（绕过规则）`。同一次请求的每一行都带相同的 8 位请求编号，用 `grep` 搜编号就能看到一次请求的完整过程。
+
+| 级别 | 内容 |
+|---|---|
+| debug | 每个阶段一行：入参审批、开始（问题前 40 字）、注入检查、引导模式、意图分析、审查模型原始输出、生成回答、输出审查、改写与二次审查、画画各步骤 |
+| info（默认） | 每次对话结束一行结果摘要：处理路径、意图、审查结论、调用方、角色、输出字数、各阶段耗时 |
+| warn | 请求被拒绝、审查模型调用失败或输出无法识别、画画失败 |
+| error | 读取配置失败、主模型出错等 |
+
+- 在控制台"审计"页可以在线切换级别，立即生效；也可以用环境变量 `LOG_LEVEL` 设置默认值，控制台的设置优先。
+- debug 日志中会出现孩子问题的前 40 个字，排查完请调回 info。
+- 日志示例和各阶段说明见 [docs/对话流程.md](docs/对话流程.md) 第 12 节。
 
 ## 部署
 
@@ -234,7 +252,7 @@ bash /opt/childrens-tutor/remote.sh /tmp/childrens-tutor.tgz
 - 输出审查查看最近 3 条消息加待审回答，出错时按 `GUARD_STRICT` 处理
 - 走 Responses 协议时，请求会带上 `store: false`，不在厂商侧留存对话
 
-每一步的详细说明和对应代码行，见 [docs/对话流程.md](docs/对话流程.md)。
+每一步的详细说明和对应的代码文件，见 [docs/对话流程.md](docs/对话流程.md)。
 
 ## 项目结构
 
@@ -252,21 +270,67 @@ src/components/      界面组件
 
 ## 接口
 
-`POST /api/chat`
+### 网页对话 `POST /api/chat`
+
+儿童端网页使用，不需要鉴权。
 
 ```json
 { "roleId": "explorer", "messages": [{ "role": "user", "content": "为什么天空是蓝色的？" }] }
 ```
 
-返回 SSE 事件流，最多包含两个事件：
+返回 SSE 事件流：
 
 | 事件 | 数据 | 说明 |
 |---|---|---|
 | `reviewing` | `{}` | 生成完成，开始输出审查 |
-| `answer` | `{ "text": "...", "guided": true }` | 最终回答；`guided` 表示这是引导或拒绝话术 |
+| `drawing` | `{ "stage": "prompt" \| "queued" \| "rendering", "ahead"?: 2 }` | 画画进度，可能出现多次 |
+| `answer` | `{ "text": "...", "guided": true, "image": "/api/images/…" }` | 最终回答；`guided` 表示引导或拒绝话术，`image` 仅画画时出现 |
 | `error` | `{ "message": "..." }` | 出错，`message` 是面向孩子的提示 |
 
 客户端提交的 `model`、`system` 等字段一律忽略，模型和系统提示词只由服务端决定。
+
+### 第三方 API `POST /v1/responses`
+
+兼容 OpenAI Responses API，**一问一答、不带上下文、只返回审查后的结果**。与网页共用同一条主链路，注入拦截、意图审查、输出审查全部照常执行。可以直接转发给第三方的完整接入指南见 [docs/第三方接入.md](docs/第三方接入.md)。
+
+1. 在控制台"API 接入"中创建 Key。明文只显示一次，服务端只保存哈希。
+2. 用 OpenAI SDK 调用，`baseURL` 设为 `http://<host>:3000/v1`，`model` 填角色 id（`GET /v1/models` 可查）：
+
+```js
+import OpenAI from 'openai'
+
+const client = new OpenAI({ apiKey: process.env.API_KEY, baseURL: 'http://<host>:3000/v1' })
+const r = await client.responses.create({ model: 'explorer', input: '为什么天空是蓝色的？' })
+console.log(r.output_text, r.metadata) // metadata: { path, guided, image_url? }
+```
+
+或用 curl：
+
+```bash
+curl http://<host>:3000/v1/responses \
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"model": "explorer", "input": "为什么天空是蓝色的？"}'
+```
+
+- `input` 可以是字符串，也可以是消息数组，只取**最后一条用户消息**，截到 500 字；`instructions`、`temperature` 等字段一律忽略。
+- 返回标准 Responses 对象，回答在 `output[0].content[0].text`。扩展字段 `metadata`（值均为字符串）：
+  - `path`：处理路径，同审计
+  - `guided`：`"true"` 表示回答被系统替换或拒绝（`refusal`、`injection`、`rewrite`、`fallback`、`guard_error`）
+  - `image_url`：画画结果的绝对地址
+- 支持 `stream: true`，按 OpenAI Responses 的流式事件返回。但仍然先审后放：审查通过后才推送文字，首字等待时间与非流式相同。
+- 审查故障不会返回错误，而是正常返回一句兜底话术，`path=guard_error`。客户端不会看到故障信息。
+- 错误响应采用 OpenAI 格式 `{"error": {"message", "type", "code"}}`；流式下以 `error` 事件推送：
+
+| 状态码 | 情况 |
+|---|---|
+| 401 | Key 无效 |
+| 400 | 参数错误：`model` 不存在、没有用户消息 |
+| 503 | 模型未配置 |
+| 502 | 主模型出错 |
+
+- 画画可能要等几十秒，调用方请把超时设得长一些（建议不少于 200 秒）。
+- 测试：Windows 下运行 `scripts\api-test.cmd`；Node.js 下运行 `node examples/node-client.mjs --test`，会逐项核对 metadata。
+- 审计记录中的 `client` 字段是 Key 的名称，便于区分调用方。
 
 ## 注意事项
 
