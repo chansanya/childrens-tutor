@@ -9,9 +9,11 @@
 import 'server-only'
 import { complete, type Msg } from '../llm'
 import { config } from '../config'
+import { brief, log, sec } from '../log'
 
 // words 的顺序即优先级：模型输出里同时出现多个候选词时，取排在最前的
 export async function judge<T extends string>(system: string, input: string, words: readonly T[], signal: AbortSignal) {
+  const t0 = Date.now()
   try {
     const ep = config().guard
     if (!ep) throw new Error('审查模型未配置')
@@ -23,12 +25,13 @@ export async function judge<T extends string>(system: string, input: string, wor
       signal: AbortSignal.any([signal, AbortSignal.timeout(6000)]),
     })
     const v = words.find(w => raw.toLowerCase().includes(w))
-    if (!v) console.error('[guard] unparseable:', raw)
+    log.debug(`审查模型：${ep.model} 原始输出="${brief(raw, 30)}" 解析为 ${v ?? '无法识别'}（${sec(Date.now() - t0)}）`)
+    if (!v) log.warn(`审查模型：输出无法识别，期望 ${words.join('/')} 之一，实际为"${brief(raw, 30)}"`)
     return v
   } catch (e) {
     // 孩子中止时向上抛，让整条链路停下；其他错误（超时、网络、模型报错）只记录日志
     if (signal.aborted) throw e
-    console.error('[guard]', e)
+    log.warn(`审查模型：调用失败（${sec(Date.now() - t0)}）`, e)
   }
 }
 

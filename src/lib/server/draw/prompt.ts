@@ -9,6 +9,7 @@ import 'server-only'
 import { complete, type Msg } from '../llm'
 import { config } from '../config'
 import { judge, transcript } from '../guard/judge'
+import { brief, log } from '../log'
 
 // 提示词语言由模板决定：Z-Image 的文本编码器适合中文，H3 适合英文
 const LANG = { en: '英文，不超过 60 个单词', zh: '中文，不超过 80 字' }
@@ -34,10 +35,10 @@ export async function buildDrawPrompt(messages: Msg[], lang: 'en' | 'zh', signal
     })
     const v = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? '')
     if (typeof v.reply === 'string' && typeof v.prompt === 'string' && v.prompt.trim()) return { reply: v.reply.trim(), prompt: v.prompt.trim() }
-    console.error('[draw] prompt unparseable:', raw)
+    log.warn(`画画：改写提示词的输出无法解析为 {reply, prompt}，实际为"${brief(raw, 60)}"`)
   } catch (e) {
     if (signal.aborted) throw e
-    console.error('[draw] prompt', e)
+    log.warn('画画：改写提示词失败', e)
   }
 }
 

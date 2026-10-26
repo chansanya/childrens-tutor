@@ -1,4 +1,5 @@
 import { publicRoles } from '@/lib/server/config'
+import { log } from '@/lib/server/log'
 import App from '@/components/App'
 
 export const dynamic = 'force-dynamic'
@@ -8,7 +9,7 @@ export default function Page() {
   try {
     roles = publicRoles()
   } catch (e) {
-    console.error('[page]', e)
+    log.error('首页：读取配置失败', e)
     return (
       <main className="grid h-full place-items-center p-6 text-center">
         <div>

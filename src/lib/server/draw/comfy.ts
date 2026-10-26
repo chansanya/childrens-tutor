@@ -15,6 +15,7 @@ import { mkdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { DATA_DIR, type DrawConfig } from '../config'
 import type { DrawTemplate } from './workflow'
+import { log } from '../log'
 
 export const IMAGE_DIR = join(DATA_DIR, 'images')
 
@@ -78,6 +79,7 @@ export async function generate(cfg: DrawConfig, tpl: DrawTemplate, prompt: strin
   // 2. 提交任务
   const s = AbortSignal.any([signal, AbortSignal.timeout(cfg.timeoutSec * 1000)])
   const { prompt_id: id } = await api<{ prompt_id: string }>(cfg, '/prompt', s, { prompt: wf, client_id: randomUUID() })
+  log.debug(`画画：已提交 ComfyUI，任务 ${id}，超时 ${cfg.timeoutSec} 秒`)
   const t0 = Date.now()
   let tRun = 0
   let last = ''
@@ -121,7 +123,10 @@ export async function generate(cfg: DrawConfig, tpl: DrawTemplate, prompt: strin
     }
   } catch (e) {
     // 超时或孩子中止：清理 ComfyUI 上的任务，避免占着显卡继续画
-    if (s.aborted) await cancel(cfg, id).catch(err => console.error('[draw] cancel', err))
+    if (s.aborted) {
+      log.debug(`画画：${signal.aborted ? '调用方中止' : `超过 ${cfg.timeoutSec} 秒超时`}，取消 ComfyUI 任务 ${id}`)
+      await cancel(cfg, id).catch(err => log.warn(`画画：取消 ComfyUI 任务 ${id} 失败`, err))
+    }
     throw e
   }
 }

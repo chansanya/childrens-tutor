@@ -1,4 +1,5 @@
 import { config, defaultDraw, saveSettings, type Endpoint, type Settings } from '@/lib/server/config'
+import { log } from '@/lib/server/log'
 import { parseDraw, parseEndpoint, parseRoles, text, type Target } from '@/lib/server/admin'
 import { DEFAULT_HARD_RULES } from '@/lib/server/guard/rules'
 import { DEFAULT_TEMPLATES } from '@/lib/server/draw/workflow'
@@ -32,7 +33,7 @@ export function GET() {
       defaultTemplates: DEFAULT_TEMPLATES,
     })
   } catch (e) {
-    console.error('[admin]', e)
+    log.error('控制台：读取配置失败', e)
     return Response.json({ message: `服务配置有误：${(e as Error).message}` }, { status: 500 })
   }
 }
@@ -42,7 +43,8 @@ export async function PUT(req: Request) {
   const b = await req.json().catch(() => null)
   if (!b) return bad('请求格式不正确')
   const c = config()
-  const next: Settings = {}
+  // API Key、日志级别由各自的接口单独管理，整体覆盖保存时必须保留
+  const next: Settings = { apiKeys: c.settings.apiKeys, logLevel: c.settings.logLevel }
 
   const rules = text(b.hardRules, 20000)
   if (!rules) return bad('硬规则不能为空')

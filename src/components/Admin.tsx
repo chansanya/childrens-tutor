@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   Check,
   ChevronDown,
+  Copy,
   KeyRound,
   MessagesSquare,
   Paintbrush,
@@ -26,10 +27,12 @@ import {
 } from 'lucide-react'
 import { ICON_NAMES } from '@/lib/icons'
 import RoleIcon from './RoleIcon'
+import { copyText } from '@/lib/clipboard'
+import { PATH_LABEL, STAGE_LABEL } from '@/lib/labels'
 
 type Provider = 'openai-responses' | 'anthropic'
 type Target = 'main' | 'guard'
-type Tab = 'models' | 'rules' | 'roles' | 'draw' | 'audit'
+type Tab = 'models' | 'rules' | 'roles' | 'draw' | 'audit' | 'api'
 
 interface EpView {
   provider: Provider
@@ -124,6 +127,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'roles', label: '角色管理', icon: Users },
   { id: 'draw', label: '绘画', icon: Paintbrush },
   { id: 'audit', label: '审计', icon: Activity },
+  { id: 'api', label: 'API 接入', icon: KeyRound },
 ]
 
 const tplForm = ({ seedNode, seedField, workflow, ...t }: TplData): TplForm => ({
@@ -731,36 +735,6 @@ function DrawPanel({ value, onChange }: { value: DrawForm; onChange: (p: Partial
   )
 }
 
-const STAGE_LABEL: Record<string, string> = {
-  total: '总耗时',
-  intent: '意图审查',
-  generate: '生成回答',
-  review: '输出审查',
-  rewrite: '重新生成',
-  review2: '二次审查',
-  drawPrompt: '改写画画提示词',
-  drawReview: '提示词复核',
-  drawQueue: '画画排队',
-  drawRender: '画画渲染',
-  drawFetch: '下载图片',
-}
-
-const PATH_LABEL: Record<string, string> = {
-  answer: '正常回答',
-  rewrite: '代写后重写',
-  fallback: '固定引导',
-  refusal: '绕过拒绝',
-  injection: '注入拦截',
-  unsafe_intent: '不安全提问',
-  unsafe_output: '不安全回答',
-  guard_error: '审查故障',
-  draw: '画画成功',
-  draw_busy: '画画繁忙',
-  draw_failed: '画画失败',
-  draw_unsafe: '画画不安全',
-  error: '出错',
-  aborted: '孩子中止',
-}
 
 interface AuditRec {
   ts: string
@@ -775,6 +749,192 @@ interface AuditData {
   stages: { stage: string; count: number; avg: number; p50: number; p95: number }[]
   paths: { path: string; count: number }[]
   recent: AuditRec[]
+}
+
+interface KeyView {
+  id: string
+  name: string
+  hint: string
+  createdAt: string
+}
+
+function CodeBlock({ code, copied, onCopy }: { code: string; copied: boolean; onCopy: () => void }) {
+  return (
+    <div className="relative">
+      <pre className="scroll-soft overflow-x-auto rounded-xl border border-line bg-paper/70 p-4 pr-12 font-mono text-xs leading-relaxed">{code}</pre>
+      <button aria-label="复制" onClick={onCopy} className="absolute right-2 top-2 rounded-lg p-1.5 text-muted transition-colors hover:bg-ink/5 hover:text-ink">
+        {copied ? <Check size={15} /> : <Copy size={15} />}
+      </button>
+    </div>
+  )
+}
+
+// 第三方 API Key 管理：创建、吊销立即生效，不走底部的保存按钮
+function ApiPanel({ model }: { model: string }) {
+  const [keys, setKeys] = useState<KeyView[] | null>(null)
+  const [name, setName] = useState('')
+  const [created, setCreated] = useState<string | null>(null)
+  const [confirm, setConfirm] = useState<string | null>(null)
+  const [copied, setCopied] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    fetch('/api/admin/keys')
+      .then(r => r.json())
+      .then(d => setKeys(d.keys))
+      .catch(() => setError('加载失败，请检查服务是否启动'))
+  }, [])
+
+  const create = async () => {
+    setError('')
+    const r = await fetch('/api/admin/keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }).catch(() => null)
+    const d = await r?.json().catch(() => null)
+    if (!r?.ok) return setError(d?.message ?? '创建失败')
+    setCreated(d.key)
+    setName('')
+    setKeys(k => [...(k ?? []), { id: d.id, name: d.name, hint: d.hint, createdAt: d.createdAt }])
+  }
+
+  const revoke = async (id: string) => {
+    setConfirm(null)
+    const r = await fetch(`/api/admin/keys?id=${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => null)
+    if (!r?.ok) return setError('吊销失败')
+    setKeys((await r.json()).keys)
+  }
+
+  const copy = async (label: string, text: string) => {
+    await copyText(text)
+    setCopied(label)
+    setTimeout(() => setCopied(''), 1500)
+  }
+
+  const base = `${window.location.origin}/v1`
+  const curl = `curl ${base}/responses \\\n  -H "Authorization: Bearer $API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "${model}", "input": "为什么天空是蓝色的？"}'`
+  const sdk = `import OpenAI from 'openai'\n\nconst client = new OpenAI({ apiKey: process.env.API_KEY, baseURL: '${base}' })\nconst r = await client.responses.create({ model: '${model}', input: '为什么天空是蓝色的？' })\nconsole.log(r.output_text, r.metadata)`
+
+  return (
+    <div className="flex flex-col gap-6">
+      <Panel>
+        <div className={label}>
+          新建 API Key
+          <div className="flex gap-2">
+            <input value={name} maxLength={30} onChange={e => setName(e.target.value)} placeholder="调用方名称，例如 某某小程序" className={`${field} min-w-0`} />
+            <button
+              onClick={create}
+              disabled={!name.trim()}
+              className="flex shrink-0 items-center gap-1.5 rounded-xl bg-ink px-4 text-paper transition-opacity disabled:opacity-35"
+            >
+              <Plus size={16} />
+              <span className="hidden sm:inline">新建</span>
+            </button>
+          </div>
+          {error && <span className="text-xs text-red-600">{error}</span>}
+        </div>
+        {created && (
+          <div className="mt-4 flex flex-col gap-2 rounded-xl bg-amber-500/10 p-4 text-sm text-amber-900">
+            <span className="flex items-center gap-2">
+              <TriangleAlert size={16} className="shrink-0" />
+              请立即复制保存，关闭后无法再次查看
+            </span>
+            <CodeBlock code={created} copied={copied === 'key'} onCopy={() => copy('key', created)} />
+            <button onClick={() => setCreated(null)} className="self-end rounded-lg px-3 py-1.5 text-xs hover:bg-ink/5">
+              我已保存
+            </button>
+          </div>
+        )}
+      </Panel>
+
+      <Panel className="!p-0">
+        {!keys?.length ? (
+          <p className="p-5 text-sm text-muted">{keys ? '还没有 API Key' : '加载中……'}</p>
+        ) : (
+          keys.map(k => (
+            <div key={k.id} className="flex items-center gap-3 border-b border-line px-5 py-3.5 last:border-0">
+              <KeyRound size={16} className="shrink-0 text-muted" />
+              <span className="min-w-0 flex-1 truncate">{k.name}</span>
+              <span className="hidden font-mono text-xs text-muted sm:inline">ctk_…{k.hint}</span>
+              <span className="hidden text-xs text-muted sm:inline">{new Date(k.createdAt).toLocaleDateString('zh-CN')}</span>
+              {confirm === k.id ? (
+                <span className="flex shrink-0 items-center gap-1 text-xs text-red-600">
+                  吊销？
+                  <button aria-label="确认吊销" onClick={() => revoke(k.id)} className="rounded-lg p-1.5 hover:bg-red-500/10">
+                    <Check size={16} />
+                  </button>
+                  <button aria-label="取消" onClick={() => setConfirm(null)} className="rounded-lg p-1.5 text-muted hover:bg-ink/5">
+                    <X size={16} />
+                  </button>
+                </span>
+              ) : (
+                <button aria-label="吊销" title="吊销" onClick={() => setConfirm(k.id)} className="shrink-0 rounded-lg p-2 text-muted transition-colors hover:bg-ink/5 hover:text-red-600">
+                  <Trash2 size={16} />
+                </button>
+              )}
+            </div>
+          ))
+        )}
+      </Panel>
+
+      <Panel>
+        <h2 className="font-display text-xl">调用方式</h2>
+        <p className="mb-4 mt-1 text-sm text-muted">
+          兼容 OpenAI Responses，一问一答、不带上下文，只返回审查后的结果。model 填角色 id（GET {base}/models 可查），metadata.guided 表示引导或拒绝话术，画画时 metadata.image_url 为图片地址。
+        </p>
+        <div className="flex flex-col gap-3">
+          <CodeBlock code={curl} copied={copied === 'curl'} onCopy={() => copy('curl', curl)} />
+          <CodeBlock code={sdk} copied={copied === 'sdk'} onCopy={() => copy('sdk', sdk)} />
+        </div>
+      </Panel>
+    </div>
+  )
+}
+
+const LEVEL_DESC: Record<string, string> = {
+  debug: '打印每个阶段：入参审批、注入检查、意图分析、生成、输出审查、画画各步骤。日志中会出现问题的前 40 个字，排查完请调回 info',
+  info: '每次对话一行结果摘要：处理路径、意图、审查结论、各阶段耗时（默认）',
+  warn: '只打印降级与异常，例如审查模型输出无法识别、画画失败',
+  error: '只打印错误',
+}
+
+// 服务日志级别：保存后立即生效，无需重启
+function LogLevelPanel() {
+  const [level, setLevel] = useState<string | null>(null)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  useEffect(() => {
+    fetch('/api/admin/log-level')
+      .then(r => r.json())
+      .then(d => setLevel(d.level))
+      .catch(() => setMsg({ ok: false, text: '加载失败' }))
+  }, [])
+
+  const change = async (v: string) => {
+    const r = await fetch('/api/admin/log-level', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: v }) }).catch(() => null)
+    if (!r?.ok) return setMsg({ ok: false, text: '保存失败' })
+    setLevel((await r.json()).level)
+    setMsg({ ok: true, text: '已生效' })
+    setTimeout(() => setMsg(null), 1500)
+  }
+
+  return (
+    <Panel className="!p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-sm">服务日志级别</span>
+        <div className="inline-flex rounded-xl border border-line bg-paper/60 p-1">
+          {Object.keys(LEVEL_DESC).map(l => (
+            <button
+              key={l}
+              onClick={() => change(l)}
+              className={`rounded-lg px-3 py-1 font-mono text-sm transition-colors ${level === l ? 'bg-ink text-paper' : 'text-muted hover:text-ink'}`}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+        {msg && <span className={`text-xs ${msg.ok ? 'text-emerald-700' : 'text-red-600'}`}>{msg.text}</span>}
+      </div>
+      {level && <p className={`mt-2 text-xs ${level === 'debug' ? 'text-amber-700' : 'text-muted'}`}>{LEVEL_DESC[level]}</p>}
+    </Panel>
+  )
 }
 
 function AuditPanel() {
@@ -805,6 +965,7 @@ function AuditPanel() {
 
   return (
     <div className="flex flex-col gap-6">
+      <LogLevelPanel />
       <div className="flex flex-wrap items-center gap-2">
         {[1, 7, 30].map(d => (
           <button
@@ -925,7 +1086,7 @@ export default function Admin() {
   const base = data && toForm(data)
   const dirtyKey = (k: keyof Form) => !!form && !!base && JSON.stringify(form[k]) !== JSON.stringify(base[k])
   const dirty = (t: Tab) =>
-    t === 'models' ? dirtyKey('main') || dirtyKey('guard') : t === 'rules' ? dirtyKey('hardRules') : t === 'audit' ? false : dirtyKey(t)
+    t === 'models' ? dirtyKey('main') || dirtyKey('guard') : t === 'rules' ? dirtyKey('hardRules') : t === 'audit' || t === 'api' ? false : dirtyKey(t)
   const anyDirty = dirtyKey('main') || dirtyKey('guard') || dirtyKey('hardRules') || dirtyKey('roles') || dirtyKey('draw')
   const missing = (t: Tab) =>
     !!data && ((t === 'models' && (!data.main.current || !data.guard.current)) || (t === 'draw' && data.draw.enabled && !data.draw.url))
@@ -1105,6 +1266,7 @@ export default function Admin() {
                   <DrawPanel value={form.draw} onChange={p => set({ draw: { ...form.draw, ...p } })} />
                 </div>
                 {tab === 'audit' && <AuditPanel />}
+                {tab === 'api' && <ApiPanel model={data.roles[0]?.id ?? 'explorer'} />}
               </>
             )}
           </div>

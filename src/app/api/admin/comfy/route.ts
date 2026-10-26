@@ -1,4 +1,5 @@
 import { text } from '@/lib/server/admin'
+import { log } from '@/lib/server/log'
 import { systemStats } from '@/lib/server/draw/comfy'
 
 export const dynamic = 'force-dynamic'
@@ -19,7 +20,7 @@ export async function POST(req: Request) {
       devices: (s.devices ?? []).map(d => ({ name: d.name ?? '', vramTotal: d.vram_total ?? 0, vramFree: d.vram_free ?? 0 })),
     })
   } catch (e) {
-    console.error('[admin/comfy]', e)
+    log.warn('控制台：测试 ComfyUI 连接失败', e)
     return Response.json({ message: `连接失败：${(e as Error).message}` }, { status: 502 })
   }
 }

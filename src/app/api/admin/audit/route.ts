@@ -1,4 +1,5 @@
 import { open, readdir, unlink } from 'fs/promises'
+import { log } from '@/lib/server/log'
 import { join } from 'path'
 import { LOG_DIR } from '@/lib/server/audit'
 
@@ -36,7 +37,7 @@ const auditFiles = async () => (await readdir(LOG_DIR).catch(() => [] as string[
 export async function DELETE() {
   const files = await auditFiles()
   await Promise.all(files.map(f => unlink(join(LOG_DIR, f))))
-  console.log(`[audit] 已清除 ${files.length} 个日志文件`)
+  log.info(`控制台：已清除 ${files.length} 个审计日志文件`)
   return Response.json({ removed: files.length })
 }
 

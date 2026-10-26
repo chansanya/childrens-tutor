@@ -1,4 +1,5 @@
 import { isTarget, parseConnection } from '@/lib/server/admin'
+import { log } from '@/lib/server/log'
 import { listModels } from '@/lib/server/llm'
 
 export const dynamic = 'force-dynamic'
@@ -11,7 +12,7 @@ export async function POST(req: Request) {
   try {
     return Response.json({ models: await listModels(conn.value!) })
   } catch (e) {
-    console.error('[admin/models]', e)
+    log.warn('控制台：加载模型列表失败', e)
     return Response.json({ message: `加载失败：${(e as Error).message}` }, { status: 502 })
   }
 }

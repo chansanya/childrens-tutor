@@ -14,6 +14,7 @@ import { join } from 'path'
 import type { PublicRole } from '../types'
 import { DEFAULT_HARD_RULES } from './guard/rules'
 import { DEFAULT_TEMPLATES, type DrawTemplate } from './draw/workflow'
+import { log, setLogLevel, type LogLevel } from './log'
 
 export const PROVIDERS = ['openai-responses', 'anthropic'] as const
 export type Provider = (typeof PROVIDERS)[number]
@@ -43,6 +44,18 @@ export interface Settings {
   main?: Endpoint
   guard?: Endpoint
   draw?: DrawConfig
+  // 第三方调用 /v1/responses 的 API Key，只存哈希
+  apiKeys?: ApiKey[]
+  // 日志级别，覆盖环境变量 LOG_LEVEL；在控制台"审计"页调整
+  logLevel?: LogLevel
+}
+
+export interface ApiKey {
+  id: string
+  name: string
+  hash: string // sha256，明文只在创建时返回一次
+  hint: string // 尾号，便于识别
+  createdAt: string
 }
 
 export interface DrawConfig {
@@ -100,7 +113,7 @@ export function parseExtra(raw: string | undefined, name: string) {
 // Chat Completions 已弃用：旧配置视为未配置，保证控制台仍可打开并重新配置
 function deprecated(provider: unknown, where: string) {
   if (provider !== 'openai') return false
-  console.warn(`[config] ${where} 的 openai（Chat Completions）已弃用，请改为 openai-responses`)
+  log.warn(`配置：${where} 的 openai（Chat Completions）已弃用，请改为 openai-responses，当前按未配置处理`)
   return true
 }
 
@@ -123,6 +136,7 @@ function endpoint(prefix: '' | 'GUARD_'): Endpoint | undefined {
 // 读取并合并全部配置。旧的 openai（Chat Completions）配置视为未配置，控制台仍可打开并重新配置
 function load() {
   const settings: Settings = existsSync(SETTINGS_FILE) ? readJson(SETTINGS_FILE) : {}
+  setLogLevel(settings.logLevel)
   const envMain = endpoint('')
   // 任一 GUARD_ 连接项存在即视为独立厂商，不继承主配置，避免把一家的 Key 发到另一家
   const separate = ['GUARD_PROVIDER', 'GUARD_API_KEY', 'GUARD_BASE_URL'].some(k => env(k, false))
