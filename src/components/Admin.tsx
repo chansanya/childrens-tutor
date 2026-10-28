@@ -6,7 +6,9 @@ import {
   ArrowLeft,
   Check,
   ChevronDown,
+  Cloud,
   Copy,
+  Cpu,
   KeyRound,
   MessagesSquare,
   Paintbrush,
@@ -84,8 +86,26 @@ interface TplData {
   seedField?: string
 }
 
+type DrawMode = 'comfy' | 'api'
+type ImageProvider = 'openai-images' | 'dashscope'
+
+interface ImgApiView {
+  provider: ImageProvider
+  baseURL: string
+  model: string
+  size: string
+  lang: Lang
+  style: string
+  extra: string
+  keyHint: string
+}
+
+type ImgApiForm = Omit<ImgApiView, 'keyHint'> & { apiKey: string }
+
 interface DrawData {
   enabled: boolean
+  mode: DrawMode
+  api?: ImgApiView
   url: string
   active: string
   timeoutSec: number
@@ -95,7 +115,7 @@ interface DrawData {
 
 // 表单中工作流以 JSON 文本编辑，种子节点留空表示不随机
 type TplForm = Omit<TplData, 'workflow' | 'seedNode' | 'seedField'> & { workflow: string; seedNode: string; seedField: string }
-type DrawForm = Omit<DrawData, 'templates'> & { templates: TplForm[] }
+type DrawForm = Omit<DrawData, 'templates' | 'api'> & { templates: TplForm[]; api: ImgApiForm }
 
 interface Data {
   hardRules: string
@@ -137,7 +157,20 @@ const tplForm = ({ seedNode, seedField, workflow, ...t }: TplData): TplForm => (
   seedField: seedField ?? 'seed',
 })
 
-const drawForm = (d: DrawData): DrawForm => ({ ...d, templates: d.templates.map(tplForm) })
+const drawForm = ({ api, ...d }: DrawData): DrawForm => ({
+  ...d,
+  templates: d.templates.map(tplForm),
+  api: {
+    provider: api?.provider ?? 'openai-images',
+    baseURL: api?.baseURL ?? '',
+    model: api?.model ?? '',
+    size: api?.size ?? '',
+    lang: api?.lang ?? 'zh',
+    style: api?.style ?? '儿童绘本插画风格，可爱，色彩明亮，柔和光线，适合儿童',
+    extra: api?.extra ?? '',
+    apiKey: '',
+  },
+})
 
 const epForm = (d: EpData): EpForm => {
   const v = d.current ?? d.env
@@ -635,10 +668,66 @@ function TemplateCard(props: {
   )
 }
 
-function DrawPanel({ value, onChange }: { value: DrawForm; onChange: (p: Partial<DrawForm>) => void }) {
+const DRAW_MODES: { id: DrawMode; label: string; desc: string; icon: LucideIcon }[] = [
+  { id: 'comfy', label: 'ComfyUI', desc: '自建显卡，用工作流模板出图', icon: Cpu },
+  { id: 'api', label: '云端文生图', desc: 'OpenAI 兼容 /images/generations，按张计费', icon: Cloud },
+]
+
+// 协议决定请求路径与格式；示例值随协议切换
+const IMAGE_PROVIDERS: { value: ImageProvider; label: string; path: string; baseURL: string; model: string; extra: string }[] = [
+  {
+    value: 'openai-images',
+    label: 'OpenAI Images 兼容',
+    path: '/images/generations',
+    baseURL: 'https://ark.cn-beijing.volces.com/api/v3',
+    model: '例如 doubao-seedream-4-0-250828、qwen-image-3.0-pro',
+    extra: '百炼 qwen-image 务必填 {"prompt_extend": false}',
+  },
+  {
+    value: 'dashscope',
+    label: '阿里云百炼原生',
+    path: '/services/aigc/multimodal-generation/generation',
+    baseURL: 'https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1',
+    model: '例如 z-image-turbo',
+    extra: '合并进 parameters，例如 {"seed": 42}',
+  },
+]
+
+// 常用尺寸，面积都在百炼推荐范围内；不在列表里的用"自定义"
+const IMAGE_SIZES = [
+  { value: '', label: '厂商默认' },
+  { value: '1024x1024', label: '1:1 方图 · 1024x1024（推荐）' },
+  { value: '864x1152', label: '3:4 竖图 · 864x1152' },
+  { value: '1152x864', label: '4:3 横图 · 1152x864' },
+  { value: '1024x1536', label: '2:3 竖图 · 1024x1536' },
+  { value: '1536x1024', label: '3:2 横图 · 1536x1024' },
+  { value: '720x1280', label: '9:16 竖图 · 720x1280' },
+  { value: '1280x720', label: '16:9 横图 · 1280x720' },
+]
+const CUSTOM_SIZE = 'custom'
+
+function DrawPanel({ value, keyHint, onChange }: { value: DrawForm; keyHint?: string; onChange: (p: Partial<DrawForm>) => void }) {
   const [open, setOpen] = useState<string | null>(null)
-  const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null)
+  const [test, setTest] = useState<{ ok: boolean; text: string; image?: string } | null>(null)
   const [testing, setTesting] = useState(false)
+  const setApi = (p: Partial<ImgApiForm>) => onChange({ api: { ...value.api, ...p } })
+  const proto = IMAGE_PROVIDERS.find(p => p.value === value.api.provider)!
+  const [customSize, setCustomSize] = useState(() => !IMAGE_SIZES.some(s => s.value === value.api.size))
+
+  // 用表单中的配置实际出一张图，会产生费用
+  const tryDraw = async () => {
+    setTesting(true)
+    setTest(null)
+    try {
+      const r = await fetch('/api/admin/draw-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value.api) })
+      const d = await r.json()
+      setTest(r.ok ? { ok: true, text: `出图成功 · 用时 ${fmt(d.ms)}`, image: d.image } : { ok: false, text: d.message })
+    } catch {
+      setTest({ ok: false, text: '试画失败，请检查网络' })
+    } finally {
+      setTesting(false)
+    }
+  }
 
   const check = async () => {
     setTesting(true)
@@ -676,61 +765,182 @@ function DrawPanel({ value, onChange }: { value: DrawForm; onChange: (p: Partial
           </span>
           <input type="checkbox" checked={value.enabled} onChange={e => onChange({ enabled: e.target.checked })} className="h-5 w-5 accent-[var(--accent)]" />
         </label>
+        <div role="radiogroup" aria-label="出图方式" className="mb-5 grid gap-2 sm:grid-cols-2">
+          {DRAW_MODES.map(m => (
+            <button
+              key={m.id}
+              role="radio"
+              aria-checked={value.mode === m.id}
+              onClick={() => (onChange({ mode: m.id }), setTest(null))}
+              className={`flex items-start gap-3 rounded-xl border p-3.5 text-left transition-colors ${
+                value.mode === m.id ? 'border-accent/70 bg-accent/10' : 'border-line bg-paper/60 hover:border-ink/30'
+              }`}
+            >
+              <m.icon size={18} className={`mt-0.5 shrink-0 ${value.mode === m.id ? 'text-accent' : 'text-muted'}`} />
+              <span className="min-w-0">
+                <span className="block text-[15px] text-ink">{m.label}</span>
+                <span className="text-xs text-muted">{m.desc}</span>
+              </span>
+            </button>
+          ))}
+        </div>
         <div className="grid gap-4 sm:grid-cols-2">
-          <div className={`${label} sm:col-span-2`}>
-            ComfyUI 地址
-            <div className="flex gap-2">
-              <input value={value.url} onChange={e => onChange({ url: e.target.value })} placeholder="http://192.168.1.x:8188" className={`${field} min-w-0 font-mono`} />
-              <button
-                onClick={check}
-                disabled={testing || !value.url}
-                className="flex shrink-0 items-center gap-1.5 rounded-xl border border-line bg-paper/60 px-3.5 text-ink transition-colors hover:border-accent/60 disabled:opacity-50"
-              >
-                <Plug size={15} className={testing ? 'animate-pulse' : ''} />
-                <span className="hidden sm:inline">{testing ? '连接中' : '测试连接'}</span>
-              </button>
+          {value.mode === 'comfy' ? (
+            <div className={`${label} sm:col-span-2`}>
+              ComfyUI 地址
+              <div className="flex gap-2">
+                <input value={value.url} onChange={e => onChange({ url: e.target.value })} placeholder="http://192.168.1.x:8188" className={`${field} min-w-0 font-mono`} />
+                <button
+                  onClick={check}
+                  disabled={testing || !value.url}
+                  className="flex shrink-0 items-center gap-1.5 rounded-xl border border-line bg-paper/60 px-3.5 text-ink transition-colors hover:border-accent/60 disabled:opacity-50"
+                >
+                  <Plug size={15} className={testing ? 'animate-pulse' : ''} />
+                  <span className="hidden sm:inline">{testing ? '连接中' : '测试连接'}</span>
+                </button>
+              </div>
+              {test && <span className={`text-xs ${test.ok ? 'text-emerald-700' : 'text-red-600'}`}>{test.text}</span>}
             </div>
-            {test && <span className={`text-xs ${test.ok ? 'text-emerald-700' : 'text-red-600'}`}>{test.text}</span>}
-          </div>
+          ) : (
+            <>
+              <label className={label}>
+                协议
+                <select value={value.api.provider} onChange={e => setApi({ provider: e.target.value as ImageProvider })} className={field}>
+                  {IMAGE_PROVIDERS.map(p => (
+                    <option key={p.value} value={p.value}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className={label}>
+                提示词语言
+                <select value={value.api.lang} onChange={e => setApi({ lang: e.target.value as Lang })} className={field}>
+                  <option value="zh">中文</option>
+                  <option value="en">英文</option>
+                </select>
+              </label>
+              <label className={`${label} sm:col-span-2`}>
+                接口地址（填到 {proto.path} 之前）
+                <input value={value.api.baseURL} onChange={e => setApi({ baseURL: e.target.value })} placeholder={proto.baseURL} className={`${field} font-mono`} />
+              </label>
+              <label className={`${label} sm:col-span-2`}>
+                <span className="flex items-center gap-1.5">
+                  <KeyRound size={14} />
+                  API Key
+                </span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={value.api.apiKey}
+                  onChange={e => setApi({ apiKey: e.target.value })}
+                  placeholder={keyHint ? `已配置 ${keyHint}，留空保持不变；修改协议或地址时必须重新填写` : '请填写 API Key'}
+                  className={`${field} font-mono`}
+                />
+              </label>
+              <label className={label}>
+                模型
+                <input value={value.api.model} onChange={e => setApi({ model: e.target.value })} placeholder={proto.model} className={`${field} font-mono`} />
+              </label>
+              <div className={label}>
+                尺寸
+                <select
+                  aria-label="尺寸"
+                  value={customSize ? CUSTOM_SIZE : value.api.size}
+                  onChange={e => {
+                    const v = e.target.value
+                    setCustomSize(v === CUSTOM_SIZE)
+                    if (v !== CUSTOM_SIZE) setApi({ size: v })
+                  }}
+                  className={field}
+                >
+                  {IMAGE_SIZES.map(s => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_SIZE}>自定义</option>
+                </select>
+                {customSize && (
+                  <input
+                    aria-label="自定义尺寸"
+                    value={value.api.size}
+                    onChange={e => setApi({ size: e.target.value })}
+                    placeholder="宽x高，例如 1280x1280；Seedream 可填 2K"
+                    className={`${field} font-mono`}
+                  />
+                )}
+                {value.api.provider === 'openai-images' && <span className="text-xs">OpenAI gpt-image 只支持 1:1、2:3、3:2 三种</span>}
+              </div>
+              <label className={`${label} sm:col-span-2`}>
+                额外请求参数（JSON，可选）
+                <input value={value.api.extra} onChange={e => setApi({ extra: e.target.value })} placeholder={proto.extra} className={`${field} font-mono`} />
+              </label>
+              <label className={`${label} sm:col-span-2`}>
+                风格后缀
+                <input value={value.api.style} onChange={e => setApi({ style: e.target.value })} placeholder="追加在提示词后，统一画风" className={field} />
+              </label>
+              <div className={`${label} sm:col-span-2`}>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={tryDraw}
+                    disabled={testing || !value.api.baseURL || !value.api.model}
+                    className="flex items-center gap-1.5 rounded-xl border border-line bg-paper/60 px-3.5 py-2 text-ink transition-colors hover:border-accent/60 disabled:opacity-50"
+                  >
+                    <Paintbrush size={15} className={testing ? 'animate-pulse' : ''} />
+                    {testing ? '正在画' : '试画一张'}
+                  </button>
+                  <span className="text-xs">会实际调用接口并产生一次费用</span>
+                </div>
+                {test && <span className={`text-xs ${test.ok ? 'text-emerald-700' : 'text-red-600'}`}>{test.text}</span>}
+                {test?.image && (
+                  // eslint-disable-next-line @next/next/no-img-element -- 图片来自本站 /api/images，无需 next/image 优化
+                  <img src={test.image} alt="试画结果" className="mt-1 w-48 rounded-xl border border-line" />
+                )}
+              </div>
+            </>
+          )}
           <label className={label}>
             单次超时（秒）
             <input type="number" min={30} max={900} value={value.timeoutSec} onChange={e => onChange({ timeoutSec: Number(e.target.value) })} className={field} />
           </label>
           <label className={label}>
-            最大排队数（超过则提示稍后再来）
+            {value.mode === 'comfy' ? '最大排队数' : '最大并发数'}（超过则提示稍后再来）
             <input type="number" min={1} max={20} value={value.maxQueue} onChange={e => onChange({ maxQueue: Number(e.target.value) })} className={field} />
           </label>
         </div>
       </Panel>
 
-      <section className="flex flex-col gap-3">
-        <h2 className="font-display text-xl">绘画模板</h2>
-        <p className="-mt-2 text-sm text-muted">点击左侧圆点切换正在使用的模板。</p>
-        {value.templates.map(t => (
-          <TemplateCard
-            key={t.id}
-            tpl={t}
-            active={value.active === t.id}
-            open={open === t.id}
-            canDelete={value.templates.length > 1}
-            onUse={() => onChange({ active: t.id })}
-            onToggle={() => setOpen(open === t.id ? null : t.id)}
-            onChange={p => setTpl(t.id, p)}
-            onDelete={() => {
-              const templates = value.templates.filter(x => x.id !== t.id)
-              onChange({ templates, active: value.active === t.id ? templates[0].id : value.active })
-            }}
-          />
-        ))}
-        <button
-          onClick={add}
-          disabled={value.templates.length >= 10}
-          className="flex items-center justify-center gap-2 rounded-2xl border border-dashed border-ink/20 py-4 text-sm text-muted transition-colors hover:border-accent/60 hover:text-ink disabled:opacity-40"
-        >
-          <Plus size={16} />
-          新增模板
-        </button>
-      </section>
+      {value.mode === 'comfy' && (
+        <section className="flex flex-col gap-3">
+          <h2 className="font-display text-xl">绘画模板</h2>
+          <p className="-mt-2 text-sm text-muted">点击左侧圆点切换正在使用的模板。</p>
+          {value.templates.map(t => (
+            <TemplateCard
+              key={t.id}
+              tpl={t}
+              active={value.active === t.id}
+              open={open === t.id}
+              canDelete={value.templates.length > 1}
+              onUse={() => onChange({ active: t.id })}
+              onToggle={() => setOpen(open === t.id ? null : t.id)}
+              onChange={p => setTpl(t.id, p)}
+              onDelete={() => {
+                const templates = value.templates.filter(x => x.id !== t.id)
+                onChange({ templates, active: value.active === t.id ? templates[0].id : value.active })
+              }}
+            />
+          ))}
+          <button
+            onClick={add}
+            disabled={value.templates.length >= 10}
+            className="flex items-center justify-center gap-2 rounded-2xl border border-dashed border-ink/20 py-4 text-sm text-muted transition-colors hover:border-accent/60 hover:text-ink disabled:opacity-40"
+          >
+            <Plus size={16} />
+            新增模板
+          </button>
+        </section>
+      )}
     </div>
   )
 }
@@ -1089,7 +1299,9 @@ export default function Admin() {
     t === 'models' ? dirtyKey('main') || dirtyKey('guard') : t === 'rules' ? dirtyKey('hardRules') : t === 'audit' || t === 'api' ? false : dirtyKey(t)
   const anyDirty = dirtyKey('main') || dirtyKey('guard') || dirtyKey('hardRules') || dirtyKey('roles') || dirtyKey('draw')
   const missing = (t: Tab) =>
-    !!data && ((t === 'models' && (!data.main.current || !data.guard.current)) || (t === 'draw' && data.draw.enabled && !data.draw.url))
+    !!data &&
+    ((t === 'models' && (!data.main.current || !data.guard.current)) ||
+      (t === 'draw' && data.draw.enabled && (data.draw.mode === 'api' ? !data.draw.api : !data.draw.url)))
   const active = TABS.find(t => t.id === tab)!
 
   const set = (p: Partial<Form>) => form && setForm({ ...form, ...p })
@@ -1218,7 +1430,7 @@ export default function Admin() {
                       恢复默认
                     </GhostButton>
                   )}
-                  {tab === 'draw' && (
+                  {tab === 'draw' && form.draw.mode === 'comfy' && (
                     <GhostButton
                       icon={RotateCcw}
                       onClick={() => set({ draw: { ...form.draw, active: data.defaultTemplates[0].id, templates: data.defaultTemplates.map(tplForm) } })}
@@ -1263,7 +1475,7 @@ export default function Admin() {
                   <RolesPanel roles={form.roles} onChange={roles => set({ roles })} />
                 </div>
                 <div className={tab === 'draw' ? 'max-w-3xl' : 'hidden'}>
-                  <DrawPanel value={form.draw} onChange={p => set({ draw: { ...form.draw, ...p } })} />
+                  <DrawPanel value={form.draw} keyHint={data.draw.api?.keyHint} onChange={p => set({ draw: { ...form.draw, ...p } })} />
                 </div>
                 {tab === 'audit' && <AuditPanel />}
                 {tab === 'api' && <ApiPanel model={data.roles[0]?.id ?? 'explorer'} />}

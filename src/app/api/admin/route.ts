@@ -1,4 +1,4 @@
-import { config, defaultDraw, saveSettings, type Endpoint, type Settings } from '@/lib/server/config'
+import { config, defaultDraw, saveSettings, type DrawConfig, type Endpoint, type Settings } from '@/lib/server/config'
 import { log } from '@/lib/server/log'
 import { parseDraw, parseEndpoint, parseRoles, text, type Target } from '@/lib/server/admin'
 import { DEFAULT_HARD_RULES } from '@/lib/server/guard/rules'
@@ -18,6 +18,11 @@ const view = (ep?: Endpoint) =>
     keyHint: `••••${ep.apiKey.slice(-4)}`,
   }
 
+const drawView = ({ api, ...d }: DrawConfig) => ({
+  ...d,
+  api: api && { ...api, apiKey: undefined, size: api.size ?? '', extra: api.extra ? JSON.stringify(api.extra) : '', keyHint: `••••${api.apiKey.slice(-4)}` },
+})
+
 export function GET() {
   try {
     const c = config()
@@ -29,7 +34,7 @@ export function GET() {
       defaultRoles: c.baseRoles,
       main: endpoints('main', c.envMain),
       guard: endpoints('guard', c.envGuard),
-      draw: c.draw,
+      draw: drawView(c.draw),
       defaultTemplates: DEFAULT_TEMPLATES,
     })
   } catch (e) {
@@ -63,7 +68,12 @@ export async function PUT(req: Request) {
 
   const draw = parseDraw(b.draw)
   if (draw.error) return bad(draw.error)
-  if (JSON.stringify(draw.value) !== JSON.stringify(parseDraw(defaultDraw()).value)) next.draw = draw.value
+  const def = parseDraw(defaultDraw()).value!
+  if (JSON.stringify(draw.value) !== JSON.stringify(def)) {
+    // 云端连接与 .env 预设相同时不落盘，继续以 .env 为准，Key 也不会被复制进 settings.json
+    const { api, ...rest } = draw.value!
+    next.draw = JSON.stringify(api) === JSON.stringify(def.api) ? rest : draw.value
+  }
 
   saveSettings(next)
   return GET()

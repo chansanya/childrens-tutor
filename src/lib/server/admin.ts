@@ -6,7 +6,7 @@
  */
 import 'server-only'
 import { isIconName } from '../icons'
-import { config, isProvider, parseExtra, type DrawConfig, type Endpoint, type Role } from './config'
+import { config, isImageProvider, isProvider, parseExtra, type DrawConfig, type Endpoint, type ImageApi, type Role } from './config'
 import type { DrawTemplate, Workflow } from './draw/workflow'
 
 export type Target = 'main' | 'guard'
@@ -92,11 +92,42 @@ function parseWorkflow(v: unknown): Workflow | undefined {
 
 const hasField = (wf: Workflow, node: string, field: string) => Object.hasOwn(wf[node]?.inputs ?? {}, field)
 
+// 云端文生图连接。全部留空视为未配置；Key 同样与协议、地址绑定，二者变化时必须重新填写
+export function parseImageApi(input: Input): Result<ImageApi | undefined> {
+  const baseURL = text(input?.baseURL, 500)
+  const model = text(input?.model, 200)
+  let apiKey = text(input?.apiKey, 500)
+  if (!baseURL && !model && !apiKey) return { value: undefined }
+  const provider = input?.provider
+  if (!isImageProvider(provider)) return { error: '文生图的协议不正确' }
+  if (!baseURL || !/^https?:\/\//.test(baseURL)) return { error: '文生图接口地址需要以 http:// 或 https:// 开头' }
+  if (!model) return { error: '请填写文生图模型名' }
+  if (!apiKey) {
+    const current = config().draw.api
+    if (!current || provider !== current.provider || baseURL !== current.baseURL) return { error: '请填写文生图的 API Key' }
+    apiKey = current.apiKey
+  }
+  const size = text(input?.size, 20)
+  if (input?.lang !== 'en' && input?.lang !== 'zh') return { error: '文生图的提示词语言不正确' }
+  const style = typeof input?.style === 'string' ? input.style.trim().slice(0, 500) : ''
+  try {
+    // 控制台提交的是 JSON 文本；.env 预设（与默认值比较时）已是对象
+    const extra = isObject(input?.extra) ? input.extra : parseExtra(text(input?.extra, 2000), '额外参数')
+    return { value: { provider, baseURL, apiKey, model, ...(size && { size }), lang: input.lang, style, ...(extra && { extra }) } }
+  } catch {
+    return { error: '文生图的额外参数必须是 JSON 对象，例如 {"prompt_extend": false}' }
+  }
+}
+
 export function parseDraw(raw: unknown): Result<DrawConfig> {
   const input = raw as Input
   const url = text(input?.url, 500) ?? ''
   const enabled = input?.enabled === true
-  if (enabled && !url) return { error: '启用绘画需要填写 ComfyUI 地址' }
+  const mode = input?.mode === 'api' ? 'api' : 'comfy'
+  const api = parseImageApi(input?.api as Input)
+  if (api.error) return { error: api.error }
+  if (enabled && mode === 'comfy' && !url) return { error: '启用绘画需要填写 ComfyUI 地址' }
+  if (enabled && mode === 'api' && !api.value) return { error: '使用云端文生图需要填写接口地址、模型和 API Key' }
   if (url && !/^https?:\/\//.test(url)) return { error: 'ComfyUI 地址需要以 http:// 或 https:// 开头' }
   const timeoutSec = Number(input?.timeoutSec)
   const maxQueue = Number(input?.maxQueue)
@@ -125,5 +156,5 @@ export function parseDraw(raw: unknown): Result<DrawConfig> {
     templates.push({ id, name, lang: t.lang, style, workflow, promptNode, promptField, ...(seedNode && { seedNode, seedField }) })
   }
   const active = templates.find(t => t.id === input?.active)?.id ?? templates[0].id
-  return { value: { enabled, url, active, timeoutSec, maxQueue, templates } }
+  return { value: { enabled, mode, ...(api.value && { api: api.value }), url, active, timeoutSec, maxQueue, templates } }
 }

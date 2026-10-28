@@ -13,7 +13,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import type { PublicRole } from '../types'
 import { DEFAULT_HARD_RULES } from './guard/rules'
-import { DEFAULT_TEMPLATES, type DrawTemplate } from './draw/workflow'
+import { DEFAULT_TEMPLATES, STYLE_EN, STYLE_ZH, type DrawTemplate } from './draw/workflow'
 import { log, setLogLevel, type LogLevel } from './log'
 
 export const PROVIDERS = ['openai-responses', 'anthropic'] as const
@@ -58,8 +58,33 @@ export interface ApiKey {
   createdAt: string
 }
 
+// comfy：自建 ComfyUI；api：OpenAI 兼容的 /images/generations 云端接口。二选一
+export type DrawMode = 'comfy' | 'api'
+
+// openai-images：OpenAI 兼容的 /images/generations；dashscope：阿里云百炼原生 multimodal-generation（如 z-image-turbo）
+export const IMAGE_PROVIDERS = ['openai-images', 'dashscope'] as const
+export type ImageProvider = (typeof IMAGE_PROVIDERS)[number]
+export const isImageProvider = (v: unknown): v is ImageProvider => IMAGE_PROVIDERS.includes(v as ImageProvider)
+
+export interface ImageApi {
+  provider: ImageProvider
+  baseURL: string
+  apiKey: string
+  model: string
+  // 宽x高；dashscope 协议发送时自动换成 宽*高
+  size?: string
+  // 提示词语言；云端模型多数中文效果好
+  lang: 'en' | 'zh'
+  style: string
+  // 厂商私有参数：openai-images 合并进请求体，dashscope 合并进 parameters。如 {"prompt_extend": false, "watermark": false}
+  extra?: Record<string, unknown>
+}
+
 export interface DrawConfig {
   enabled: boolean
+  mode: DrawMode
+  api?: ImageApi
+  // 以下 url、active、templates 为 ComfyUI 配置
   url: string
   // 当前使用的模板 id
   active: string
@@ -68,14 +93,38 @@ export interface DrawConfig {
   templates: DrawTemplate[]
 }
 
-export const defaultDraw = (): DrawConfig => ({
-  enabled: Boolean(process.env.COMFY_URL?.trim()),
-  url: process.env.COMFY_URL?.trim() ?? '',
-  active: DEFAULT_TEMPLATES[0].id,
-  timeoutSec: 180,
-  maxQueue: 3,
-  templates: DEFAULT_TEMPLATES,
-})
+// .env 预设的云端文生图。三项连接任一存在即要求填齐，避免配了一半静默失效
+function envImageApi(): ImageApi | undefined {
+  if (!['IMAGE_BASE_URL', 'IMAGE_API_KEY', 'IMAGE_MODEL'].some(k => env(k, false))) return undefined
+  const provider = env('IMAGE_PROVIDER', false) ?? 'openai-images'
+  if (!isImageProvider(provider)) throw new Error(`IMAGE_PROVIDER 只能是 ${IMAGE_PROVIDERS.join(' / ')}`)
+  const baseURL = env('IMAGE_BASE_URL')!
+  if (!/^https?:\/\//.test(baseURL)) throw new Error('IMAGE_BASE_URL 需要以 http:// 或 https:// 开头')
+  const lang = env('IMAGE_LANG', false) ?? 'zh'
+  if (lang !== 'zh' && lang !== 'en') throw new Error('IMAGE_LANG 只能是 zh / en')
+  const size = env('IMAGE_SIZE', false)
+  const extra = parseExtra(env('IMAGE_EXTRA_BODY', false), 'IMAGE_EXTRA_BODY')
+  const style = env('IMAGE_STYLE', false) ?? (lang === 'zh' ? STYLE_ZH : STYLE_EN)
+  return { provider, baseURL, apiKey: env('IMAGE_API_KEY')!, model: env('IMAGE_MODEL')!, ...(size && { size }), lang, style, ...(extra && { extra }) }
+}
+
+// 出图方式未指定时：只配了一种就用那一种，都配了用 ComfyUI；选中的那种配好了才默认启用
+export const defaultDraw = (): DrawConfig => {
+  const url = env('COMFY_URL', false) ?? ''
+  const api = envImageApi()
+  const mode = env('DRAW_MODE', false) ?? (!url && api ? 'api' : 'comfy')
+  if (mode !== 'comfy' && mode !== 'api') throw new Error('DRAW_MODE 只能是 comfy / api')
+  return {
+    enabled: mode === 'api' ? !!api : !!url,
+    mode,
+    ...(api && { api }),
+    url,
+    active: DEFAULT_TEMPLATES[0].id,
+    timeoutSec: 180,
+    maxQueue: 3,
+    templates: DEFAULT_TEMPLATES,
+  }
+}
 
 export const activeTemplate = (d: DrawConfig) => d.templates.find(t => t.id === d.active) ?? d.templates[0]
 
@@ -154,7 +203,8 @@ function load() {
     envGuard,
     main: usable(settings.main, '控制台对话模型') ?? envMain,
     guard: usable(settings.guard, '控制台审查模型') ?? envGuard,
-    draw: settings.draw ?? defaultDraw(),
+    // 旧配置没有 mode，按 ComfyUI 处理；控制台没存云端连接时沿用 .env 预设
+    draw: settings.draw ? { ...settings.draw, mode: settings.draw.mode ?? 'comfy', api: settings.draw.api ?? envImageApi() } : defaultDraw(),
     guardStrict: env('GUARD_STRICT', false) !== 'false',
     hardRules: settings.hardRules ?? DEFAULT_HARD_RULES,
     baseRoles,

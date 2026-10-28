@@ -1,7 +1,7 @@
 /**
  * 画画的"引导 + 审查"：
  *   - buildDrawPrompt：引导。由审查模型把孩子的话改写成安全、适合儿童的绘画提示词，并写一句给孩子的回复
- *   - reviewDrawPrompt：审查。再判一次提示词能否用于给儿童画画，不通过就不提交给 ComfyUI
+ *   - reviewDrawPrompt：审查。再判一次提示词能否用于给儿童画画，不通过就不出图
  *
  * 用审查模型而不是主模型：这一步只需要简单改写，审查模型更快，也不受主模型推理耗时影响。
  */
@@ -11,7 +11,7 @@ import { config } from '../config'
 import { judge, transcript } from '../guard/judge'
 import { brief, log } from '../log'
 
-// 提示词语言由模板决定：Z-Image 的文本编码器适合中文，H3 适合英文
+// 提示词语言由 ComfyUI 模板或云端配置决定：Z-Image 的文本编码器适合中文，H3 适合英文
 const LANG = { en: '英文，不超过 60 个单词', zh: '中文，不超过 80 字' }
 
 // 改写时就约束内容：温暖可爱、无文字、无暴力恐怖、无真实人物和品牌

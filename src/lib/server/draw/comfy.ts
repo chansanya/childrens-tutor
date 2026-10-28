@@ -11,13 +11,10 @@
  */
 import 'server-only'
 import { randomUUID } from 'crypto'
-import { mkdir, writeFile } from 'fs/promises'
-import { join } from 'path'
-import { DATA_DIR, type DrawConfig } from '../config'
+import type { DrawConfig } from '../config'
 import type { DrawTemplate } from './workflow'
+import { saveImage } from './image'
 import { log } from '../log'
-
-export const IMAGE_DIR = join(DATA_DIR, 'images')
 
 type Item = [number, string, ...unknown[]]
 interface Queue {
@@ -96,10 +93,7 @@ export async function generate(cfg: DrawConfig, tpl: DrawTemplate, prompt: strin
         const tDone = Date.now()
         const r = await fetch(`${base(cfg)}/view?${new URLSearchParams({ filename: img.filename, subfolder: img.subfolder, type: img.type })}`, { signal: s })
         if (!r.ok) throw new Error(`ComfyUI /view HTTP ${r.status}`)
-        const ext = /\.jpe?g$/i.test(img.filename) ? 'jpg' : /\.webp$/i.test(img.filename) ? 'webp' : 'png'
-        const name = `${randomUUID()}.${ext}`
-        await mkdir(IMAGE_DIR, { recursive: true })
-        await writeFile(join(IMAGE_DIR, name), Buffer.from(await r.arrayBuffer()))
+        const name = await saveImage(Buffer.from(await r.arrayBuffer()))
         return { name, ms: { drawQueue: (tRun || tDone) - t0, drawRender: tRun ? tDone - tRun : 0, drawFetch: Date.now() - tDone } }
       }
 

@@ -17,8 +17,8 @@ export interface DrawTemplate {
   seedField?: string
 }
 
-const STYLE_EN = "children's picture book illustration, cute, bright colors, soft light, safe for kids"
-const STYLE_ZH = '儿童绘本插画风格，可爱，色彩明亮，柔和光线，适合儿童'
+export const STYLE_EN = "children's picture book illustration, cute, bright colors, soft light, safe for kids"
+export const STYLE_ZH = '儿童绘本插画风格，可爱，色彩明亮，柔和光线，适合儿童'
 
 // 内置模板（ComfyUI API 格式）。H3 的 megapixels 调为 1，加快出图、控制图片体积
 export const DEFAULT_TEMPLATES: DrawTemplate[] = [

@@ -2,7 +2,7 @@ import { createReadStream } from 'fs'
 import { stat } from 'fs/promises'
 import { join } from 'path'
 import { Readable } from 'stream'
-import { IMAGE_DIR } from '@/lib/server/draw/comfy'
+import { IMAGE_DIR } from '@/lib/server/draw/image'
 
 export const dynamic = 'force-dynamic'
 
